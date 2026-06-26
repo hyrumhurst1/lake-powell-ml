@@ -1,0 +1,8 @@
+# For local scripts (the notebook installs its own deps in Colab).
+earthengine-api
+geemap
+pandas
+numpy
+scikit-learn
+matplotlib
+requests
