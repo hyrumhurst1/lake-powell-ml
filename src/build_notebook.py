@@ -1,19 +1,26 @@
 """
 build_notebook.py
 -----------------
-Generates `notebooks/lake_powell_surface_area.ipynb`, a self-contained Google
-Colab notebook that builds a multi-decade Lake Powell water-surface-area time
-series from Landsat imagery and validates it against measured USBR reservoir
-elevation.
+Generates `notebooks/lake_powell_surface_area.ipynb`.
 
-We generate the .ipynb with json.dump (not by hand) so the JSON is always valid.
+The notebook = a few hand-written "keep" cells (auth, study area, USBR ground
+truth) + the verified ML pipeline cells in `src/pipeline_cells.json` (Step 2
+features, Step 3 trained Random Forest classifier, Step 4b concurrency-safe
+area extraction, Step 5 validation, Step 6 figures, Step 7 save).
+
+The pipeline cells were produced and adversarially verified by a multi-agent
+review pass (see CHANGELOG.md). We generate the .ipynb with json.dump so the
+JSON is always valid.
+
 Run:  python src/build_notebook.py
 """
 
 import json
 import os
 
-# Each entry is (cell_type, source_string). Code is authored as normal Python.
+HERE = os.path.dirname(os.path.abspath(__file__))
+PIPELINE_JSON = os.path.join(HERE, "pipeline_cells.json")
+
 CELLS = []
 
 
@@ -25,226 +32,116 @@ def code(text):
     CELLS.append(("code", text.strip("\n") + "\n"))
 
 
+def add_pipeline(cells):
+    for c in cells:
+        CELLS.append((c["type"], c["source"]))
+
+
+# ---------------------------------------------------------------------------
+# Title
 # ---------------------------------------------------------------------------
 md(r"""
-# Lake Powell Surface Area from Satellite (1984–2026)
+# Lake Powell from Space: a trained ML water classifier (1984-2026)
 
 **Author:** Hyrum Hurst
 
-This notebook measures the water-surface area of Lake Powell from Landsat
-satellite imagery over four decades and validates the result against measured
-reservoir elevation published by the U.S. Bureau of Reclamation (USBR).
+This notebook measures Lake Powell's water-surface area from four decades of
+Landsat imagery using a **trained Random Forest classifier** (benchmarked against
+an MNDWI baseline), and validates the satellite measurement against measured
+reservoir elevation from the U.S. Bureau of Reclamation.
 
-**What it does, step by step:**
-1. Authenticate to Google Earth Engine (your one manual step).
-2. Define the Lake Powell study area.
-3. Detect water in each Landsat scene using a water index (MNDWI).
-4. Build a monthly surface-area time series, 1984 to 2026.
-5. Pull measured reservoir elevation from the USBR RISE API.
-6. Validate: fit surface area to elevation and report R^2 and error.
-7. Generate publication figures and save all outputs.
+**Pipeline:**
+- Step 0: authenticate to Earth Engine (your one manual step)
+- Step 1: study area
+- Step 2: harmonize 4 Landsat sensors into a shared feature stack
+- Step 3: train a Random Forest water classifier; report held-out accuracy + kappa
+- Step 4: pull USBR measured elevation (ground truth)
+- Step 4b: concurrency-safe monthly surface area (RF mask and MNDWI baseline)
+- Step 5: validate area vs elevation; benchmark RF vs MNDWI
+- Step 6: figures
+- Step 7: save outputs + results.json
 
-Everything you need to *defend* this is explained in the markdown between cells.
-Read those. They are the asset.
+Read the markdown between cells. Understanding the method is the asset, not the
+output. See `paper/defense_brief.md`.
 """)
 
+# ---------------------------------------------------------------------------
+# Step 0 - setup + auth (project id baked in)
+# ---------------------------------------------------------------------------
 md(r"""
-## Step 0 — Setup and authentication
+## Step 0 - Setup and authentication
 
-Earth Engine is free for research but tied to *your* Google account. You need a
-registered Earth Engine project id. If you do not have one:
-1. Go to https://code.earthengine.google.com and sign in once to register.
-2. Your project id usually looks like `ee-yourname`. Put it in the cell below.
-
-This is the only step that genuinely requires you. `ee.Authenticate()` opens a
-Google sign-in and pastes a token back.
+Earth Engine is free for research but tied to *your* Google account. This is the
+only step that genuinely requires you: `ee.Authenticate()` opens a Google
+sign-in. Use the same account you registered Earth Engine under.
 """)
 
 code(r"""
-# Install dependencies (Colab usually has earthengine-api; geemap we add).
-!pip install -q earthengine-api geemap scikit-learn
+# Colab usually has earthengine-api; we add geemap, scikit-learn, scipy.
+!pip install -q earthengine-api geemap scikit-learn scipy
 
 import ee
 import geemap
 
-# ---- Your Earth Engine project id ----
-EE_PROJECT = "outreach-bot-493219"
+EE_PROJECT = "outreach-bot-493219"   # your registered Earth Engine project
 
 ee.Authenticate()          # opens Google sign-in the first time
 ee.Initialize(project=EE_PROJECT)
 print("Earth Engine initialized for project:", EE_PROJECT)
 """)
 
+# ---------------------------------------------------------------------------
+# Step 1 - study area (Step 2 re-pins AOI with planar edges; this is the map)
+# ---------------------------------------------------------------------------
 md(r"""
-## Step 1 — Study area
+## Step 1 - Study area
 
-Lake Powell sits on the Colorado River at the Utah–Arizona border, impounded by
-Glen Canyon Dam. It is a long, branching canyon reservoir, which is exactly what
-makes the shoreline hard to map and therefore interesting.
+Lake Powell sits on the Colorado River at the Utah-Arizona border, behind Glen
+Canyon Dam. It is a long, branching canyon reservoir, which makes its shoreline
+hard to map and therefore a good test for the classifier.
 
-We draw a generous bounding polygon around the full-pool extent. We do **not**
-need a tight outline: the water index decides what is water *inside* this box, so
-the box only has to contain the reservoir and exclude other large water bodies.
+A generous bounding box contains the full-pool extent; the classifier decides
+what is water *inside* it. (Step 2 re-defines this same box with planar edges for
+clean area sums.)
 """)
 
 code(r"""
-# Bounding box around Lake Powell's full-pool extent (lon/lat).
-# Generous on purpose; the water index segments water within it.
 AOI = ee.Geometry.Rectangle([-111.55, 36.85, -110.40, 37.95])
 
-# Quick look (optional in Colab).
 m = geemap.Map(center=[37.3, -110.95], zoom=9)
 m.addLayer(AOI, {"color": "red"}, "Study area")
 m
 """)
 
+# ---------------------------------------------------------------------------
+# Step 2 + Step 3 (features + trained RF classifier) from the verified pipeline
+# ---------------------------------------------------------------------------
+with open(PIPELINE_JSON, encoding="utf-8") as f:
+    PIPE = json.load(f)
+
+
+def is_step_2_or_3(cell):
+    t = cell["title"]
+    return t.startswith("Step 2") or t.startswith("Step 3")
+
+
+add_pipeline([c for c in PIPE if is_step_2_or_3(c)])
+
+# ---------------------------------------------------------------------------
+# Step 4 - USBR ground truth (keep). Produces elev_m[date, elevation_ft]
+# used by Step 5. Independent of the imagery, runs after Step 2 imports pandas.
+# ---------------------------------------------------------------------------
 md(r"""
-## Step 2 — Water detection
-
-We use the **Modified Normalized Difference Water Index (MNDWI)** (Xu, 2006):
-
-```
-MNDWI = (Green - SWIR1) / (Green + SWIR1)
-```
-
-Water reflects green light and strongly absorbs shortwave infrared (SWIR), so
-open water gives MNDWI > 0 while land gives MNDWI < 0. MNDWI beats the older NDWI
-here because SWIR suppresses built-up and bright-soil false positives, which
-matters against the bright canyon rock around Powell.
-
-**Why a threshold and not a deep model?** With strong, public ground truth and a
-physically grounded index, a thresholded index is the honest baseline: simple,
-reproducible, and explainable. Step 5 quantifies exactly how good it is. (The
-notebook is structured so a learned classifier could replace `add_water()` later
-without touching the rest.)
-
-We work in **Landsat Collection 2, Level 2 surface reflectance** and harmonize
-the four sensors (5, 7, 8, 9), which use different band numbers.
-""")
-
-code(r"""
-# Common band names we want, mapped from each sensor's native band ids.
-# Collection 2 L2 surface reflectance.
-SENSORS = {
-    "L5": {"id": "LANDSAT/LT05/C02/T1_L2",
-           "bands": {"SR_B2": "green", "SR_B5": "swir1"}},
-    "L7": {"id": "LANDSAT/LE07/C02/T1_L2",
-           "bands": {"SR_B2": "green", "SR_B5": "swir1"}},
-    "L8": {"id": "LANDSAT/LC08/C02/T1_L2",
-           "bands": {"SR_B3": "green", "SR_B6": "swir1"}},
-    "L9": {"id": "LANDSAT/LC09/C02/T1_L2",
-           "bands": {"SR_B3": "green", "SR_B6": "swir1"}},
-}
-
-
-def mask_and_scale(img):
-    # Apply Collection-2 scaling and mask cloud/shadow/cirrus/snow via QA_PIXEL.
-    qa = img.select("QA_PIXEL")
-    # Bit 1 dilated cloud, 2 cirrus, 3 cloud, 4 cloud shadow, 5 snow.
-    bad = (qa.bitwiseAnd(1 << 1).neq(0)
-           .Or(qa.bitwiseAnd(1 << 2).neq(0))
-           .Or(qa.bitwiseAnd(1 << 3).neq(0))
-           .Or(qa.bitwiseAnd(1 << 4).neq(0))
-           .Or(qa.bitwiseAnd(1 << 5).neq(0)))
-    # Optical SR scaling for Collection 2 Level 2.
-    optical = img.select("SR_B.").multiply(0.0000275).add(-0.2)
-    return img.addBands(optical, None, True).updateMask(bad.Not())
-
-
-def harmonize(sensor_key):
-    # Return an ImageCollection with bands renamed to green/swir1 + MNDWI water.
-    cfg = SENSORS[sensor_key]
-    native = list(cfg["bands"].keys())
-    common = list(cfg["bands"].values())
-
-    def prep(img):
-        img = mask_and_scale(img)
-        img = img.select(native).rename(common)
-        mndwi = img.normalizedDifference(["green", "swir1"]).rename("mndwi")
-        water = mndwi.gt(0).rename("water")          # threshold at 0
-        return water.copyProperties(img, ["system:time_start"])
-
-    return (ee.ImageCollection(cfg["id"])
-            .filterBounds(AOI)
-            .map(prep))
-
-
-# One merged water collection across all sensors.
-water_ic = (harmonize("L5")
-            .merge(harmonize("L7"))
-            .merge(harmonize("L8"))
-            .merge(harmonize("L9")))
-print("Merged water collection built.")
-""")
-
-md(r"""
-## Step 3 — Monthly surface-area time series
-
-For each calendar month we take the **median** water mask (median is robust to
-the occasional cloud or shadow that slips past the QA mask), multiply by true
-per-pixel area, and sum over the study area to get water area in km^2.
-
-Working month-by-month (instead of per scene) keeps the server-side job small
-enough to return in one call. If a run times out, narrow the date range or
-export to Drive (see the note at the end).
-""")
-
-code(r"""
-import pandas as pd
-
-START_YEAR, END_YEAR = 2020, 2026   # TEST RANGE: fast first run. Flip to 1984 for the full series.
-
-months = []
-y, mo = START_YEAR, 1
-while (y < END_YEAR) or (y == END_YEAR and mo <= 6):   # through June 2026
-    months.append((y, mo))
-    mo += 1
-    if mo > 12:
-        mo = 1
-        y += 1
-
-
-def monthly_area(ym):
-    y, mo = ym
-    start = ee.Date.fromYMD(y, mo, 1)
-    end = start.advance(1, "month")
-    sub = water_ic.filterDate(start, end)
-    # Median water mask for the month; 0 where no obs.
-    wm = ee.Image(ee.Algorithms.If(sub.size().gt(0),
-                                   sub.median(),
-                                   ee.Image(0).rename("water")))
-    area_img = wm.multiply(ee.Image.pixelArea())          # m^2 where water
-    area = area_img.reduceRegion(reducer=ee.Reducer.sum(),
-                                 geometry=AOI, scale=30,
-                                 maxPixels=1e13).get("water")
-    return ee.Feature(None, {"year": y, "month": mo,
-                             "n_scenes": sub.size(),
-                             "area_km2": ee.Number(area).divide(1e6)})
-
-
-fc = ee.FeatureCollection([monthly_area(ym) for ym in months])
-df = geemap.ee_to_df(fc)        # one server call
-df["date"] = pd.to_datetime(dict(year=df.year, month=df.month, day=1))
-df = df.sort_values("date").reset_index(drop=True)
-# Drop months with no usable scenes.
-df = df[df["n_scenes"] > 0].copy()
-print(f"Got {len(df)} months of surface area, "
-      f"{df.date.min().date()} to {df.date.max().date()}")
-df.head()
-""")
-
-md(r"""
-## Step 4 — Ground truth: USBR measured elevation
+## Step 4 - Ground truth: USBR measured elevation
 
 The U.S. Bureau of Reclamation publishes daily Lake Powell elevation at Glen
 Canyon Dam. We pull it from the RISE API (**catalog item 508**). This is the
-independent measurement we validate against — the whole credibility of the study
-rests on this comparison.
+independent measurement Step 5 validates against, the only non-circular reference
+in the whole pipeline.
 
-If the API call fails (param names occasionally change), the fallback is a manual
-download: open
-https://data.usbr.gov/catalog/2362/item/508 , download the CSV, upload it to
-Colab, and load it with pandas. The rest of the notebook is identical.
+If the API call fails (param names occasionally change), download the CSV from
+https://data.usbr.gov/catalog/2362/item/508 , upload it to Colab, and load it
+into a DataFrame named `elev_m` with columns `date` and `elevation_ft`.
 """)
 
 code(r"""
@@ -284,144 +181,13 @@ print(f"USBR elevation: {len(elev)} daily rows, "
 elev_m.tail()
 """)
 
-md(r"""
-## Step 5 — Validation
+# ---------------------------------------------------------------------------
+# Step 4b, 5, 6, 7 (area extraction, validation, figures, save) from pipeline
+# ---------------------------------------------------------------------------
+add_pipeline([c for c in PIPE if not is_step_2_or_3(c)])
 
-We merge the satellite surface area with measured elevation by month and ask:
-**how well does satellite-derived area predict the true reservoir level?**
-
-Reservoir area-vs-elevation is monotonic but nonlinear (a canyon holds more area
-per foot near the top than near the bottom), so we fit a degree-2 polynomial and
-report R^2 and RMSE in feet. A high R^2 with low RMSE is the headline result: it
-shows the satellite measurement tracks reality.
-""")
-
-code(r"""
-import numpy as np
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import r2_score, mean_squared_error
-
-merged = pd.merge(df[["date", "area_km2", "n_scenes"]],
-                  elev_m[["date", "elevation_ft"]], on="date", how="inner")
-merged = merged.dropna().sort_values("date").reset_index(drop=True)
-
-X = merged[["area_km2"]].values
-ytrue = merged["elevation_ft"].values
-
-model = make_pipeline(PolynomialFeatures(2), LinearRegression())
-model.fit(X, ytrue)
-pred = model.predict(X)
-
-r2 = r2_score(ytrue, pred)
-rmse = float(np.sqrt(mean_squared_error(ytrue, pred)))
-merged["elev_pred_ft"] = pred
-print(f"n = {len(merged)} matched months")
-print(f"R^2  = {r2:.3f}")
-print(f"RMSE = {rmse:.2f} ft")
-""")
-
-md(r"""
-## Step 6 — Figures
-
-Three publication figures:
-1. Surface area over time (the satellite story).
-2. Measured elevation over time (the ground-truth story).
-3. Area vs elevation with the fitted curve (the validation).
-""")
-
-code(r"""
-import matplotlib.pyplot as plt
-import os
-os.makedirs("figures", exist_ok=True)
-
-# Fig 1: surface area over time
-plt.figure(figsize=(10, 4))
-plt.plot(merged["date"], merged["area_km2"], lw=1.2)
-plt.title("Lake Powell water surface area from Landsat (1984-2026)")
-plt.ylabel("Surface area (km^2)"); plt.xlabel("Year")
-plt.tight_layout(); plt.savefig("figures/fig1_area_timeseries.png", dpi=200)
-plt.show()
-
-# Fig 2: measured elevation over time
-plt.figure(figsize=(10, 4))
-plt.plot(elev_m["date"], elev_m["elevation_ft"], lw=1.0, color="tab:orange")
-plt.axhline(3700, ls="--", c="gray", lw=0.8, label="Full pool 3700 ft")
-plt.axhline(3490, ls="--", c="red", lw=0.8, label="Min power pool 3490 ft")
-plt.axhline(3370, ls=":", c="darkred", lw=0.8, label="Dead pool 3370 ft")
-plt.title("Lake Powell measured elevation (USBR)")
-plt.ylabel("Elevation (ft)"); plt.xlabel("Year"); plt.legend(fontsize=8)
-plt.tight_layout(); plt.savefig("figures/fig2_elevation_timeseries.png", dpi=200)
-plt.show()
-
-# Fig 3: validation scatter
-order = np.argsort(merged["area_km2"].values)
-plt.figure(figsize=(6, 5))
-plt.scatter(merged["area_km2"], merged["elevation_ft"], s=10, alpha=0.5,
-            label="Monthly observations")
-plt.plot(merged["area_km2"].values[order], merged["elev_pred_ft"].values[order],
-         c="red", lw=2, label=f"Fit (R^2={r2:.3f}, RMSE={rmse:.1f} ft)")
-plt.title("Validation: satellite area vs measured elevation")
-plt.xlabel("Surface area (km^2)"); plt.ylabel("Elevation (ft)"); plt.legend()
-plt.tight_layout(); plt.savefig("figures/fig3_validation.png", dpi=200)
-plt.show()
-""")
-
-md(r"""
-## Step 7 — Save outputs and the results summary
-
-We save the merged time series as CSV and a `results.json` holding the exact
-numbers the paper cites. The paper draft references these keys, so the writeup
-stays in sync with whatever the data actually says.
-""")
-
-code(r"""
-import json
-os.makedirs("data", exist_ok=True)
-
-merged.to_csv("data/lake_powell_monthly.csv", index=False)
-
-first = merged.iloc[0]; last = merged.iloc[-1]
-peak = merged.loc[merged["area_km2"].idxmax()]
-trough = merged.loc[merged["area_km2"].idxmin()]
-
-results = {
-    "n_matched_months": int(len(merged)),
-    "date_start": str(first["date"].date()),
-    "date_end": str(last["date"].date()),
-    "r2": round(float(r2), 3),
-    "rmse_ft": round(float(rmse), 2),
-    "area_peak_km2": round(float(peak["area_km2"]), 1),
-    "area_peak_date": str(peak["date"].date()),
-    "area_trough_km2": round(float(trough["area_km2"]), 1),
-    "area_trough_date": str(trough["date"].date()),
-    "pct_area_decline_peak_to_trough": round(
-        100 * (1 - trough["area_km2"] / peak["area_km2"]), 1),
-    "elev_full_pool_ft": 3700, "elev_min_power_ft": 3490, "elev_dead_pool_ft": 3370,
-}
-with open("data/results.json", "w") as f:
-    json.dump(results, f, indent=2)
-print(json.dumps(results, indent=2))
-""")
-
-md(r"""
-## Done
-
-You now have:
-- `data/lake_powell_monthly.csv` — the merged time series
-- `data/results.json` — the numbers the paper cites
-- `figures/*.png` — three publication figures
-
-**If a server call timed out:** narrow `START_YEAR`/`END_YEAR`, or export the
-monthly FeatureCollection to Drive with `ee.batch.Export.table.toDrive(fc, ...)`
-and re-load it. Real remote-sensing pipelines almost always need one or two
-rounds of this; that is normal, not a failure.
-
-Next: drop `results.json` into the paper (`paper/paper.md` has matching
-placeholders) and read the defense brief (`paper/defense_brief.md`).
-""")
-
+# ---------------------------------------------------------------------------
+# Write the notebook
 # ---------------------------------------------------------------------------
 notebook = {
     "cells": [
@@ -439,9 +205,9 @@ notebook = {
     "nbformat_minor": 0,
 }
 
-out_path = os.path.join(os.path.dirname(__file__), "..", "notebooks",
-                        "lake_powell_surface_area.ipynb")
-out_path = os.path.normpath(out_path)
+out_path = os.path.normpath(os.path.join(HERE, "..", "notebooks",
+                                         "lake_powell_surface_area.ipynb"))
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(notebook, f, indent=1)
-print(f"Wrote {out_path} with {len(CELLS)} cells.")
+print(f"Wrote {out_path} with {len(CELLS)} cells "
+      f"({sum(1 for t, _ in CELLS if t == 'code')} code).")
