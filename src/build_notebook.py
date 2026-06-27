@@ -88,7 +88,7 @@ EE_PROJECT = "outreach-bot-493219"   # your registered Earth Engine project
 ee.Authenticate()          # opens Google sign-in the first time
 ee.Initialize(project=EE_PROJECT)
 
-NB_VERSION = "2026-06-26 v8 (random split fix)"
+NB_VERSION = "2026-06-26 v9 (200m fast area)"
 print("Earth Engine initialized for project:", EE_PROJECT)
 print(">>> NOTEBOOK VERSION:", NB_VERSION, "<<<")
 """)
