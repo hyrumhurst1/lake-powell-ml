@@ -113,8 +113,11 @@ measured rather than assumed.
 Monthly water-surface area was computed by building one median reflectance
 composite per month, applying the classifier once to that composite, multiplying
 the resulting water mask by per-pixel area, and summing over the area of interest
-in a fixed UTM Zone 12N projection. Months with no usable scenes, or with
-valid-pixel coverage below 30 percent, were recorded as missing rather than zero.
+on a 90 m analysis grid in a fixed UTM Zone 12N projection. The 90 m grid was
+chosen for tractable computation over four decades; at the scale of the reservoir
+it has a negligible effect on total area while greatly reducing memory and
+runtime. Months with no usable scenes, or with valid-pixel coverage below 30
+percent, were recorded as missing rather than zero.
 
 ### 3.3 Ground truth and validation
 
