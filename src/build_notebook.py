@@ -8,9 +8,9 @@ truth) + the verified ML pipeline cells in `src/pipeline_cells.json` (Step 2
 features, Step 3 trained Random Forest classifier, Step 4b concurrency-safe
 area extraction, Step 5 validation, Step 6 figures, Step 7 save).
 
-The pipeline cells were produced and adversarially verified by a multi-agent
-review pass (see CHANGELOG.md). We generate the .ipynb with json.dump so the
-JSON is always valid.
+The pipeline cells implement a trained Random Forest water classifier and a
+concurrency-safe monthly-area extractor, reviewed for Earth Engine correctness.
+We generate the .ipynb with json.dump so the JSON is always valid.
 
 Run:  python src/build_notebook.py
 """
@@ -185,6 +185,60 @@ elev_m.tail()
 # Step 4b, 5, 6, 7 (area extraction, validation, figures, save) from pipeline
 # ---------------------------------------------------------------------------
 add_pipeline([c for c in PIPE if not is_step_2_or_3(c)])
+
+# ---------------------------------------------------------------------------
+# Step 7b - flat paper tokens (so paper/paper.md {{...}} auto-fills cleanly)
+# ---------------------------------------------------------------------------
+md(r"""
+## Step 7b - Numbers for the writeup
+
+Flattens the key results into `results.json["paper_tokens"]` so the paper draft's
+`{{placeholders}}` fill from one place. Run `python src/fill_paper.py` afterward.
+""")
+
+code(r"""
+import json
+
+_primary_df = df_rf_clean if primary_label == "RF" else df_mndwi_clean
+
+def _r(x, n=3):
+    try:
+        return round(float(x), n)
+    except Exception:
+        return None
+
+_pk = _primary_df["area_km2"].max() if len(_primary_df) else None
+_tr = _primary_df["area_km2"].min() if len(_primary_df) else None
+
+paper_tokens = {
+    "overall_accuracy": _r(rf_accuracy),
+    "kappa": _r(rf_kappa),
+    "mndwi_overall_accuracy": _r(mndwi_accuracy),
+    "mndwi_kappa": _r(mndwi_kappa),
+    "rf_out_of_era_L5_accuracy": _r(rf_l5_accuracy),
+    "primary_method": primary_label,
+    "r2": _r(primary_val.get("r2_cv")),
+    "rmse_ft": _r(primary_val.get("rmse_ft_cv"), 2),
+    "n_months": int(primary_val.get("n") or 0),
+    "mndwi_r2_cv": _r(mndwi_val.get("r2_cv")),
+    "mndwi_rmse_ft_cv": _r(mndwi_val.get("rmse_ft_cv"), 2),
+    "area_series_mean_abs_diff_km2": _r(area_mean_abs_diff, 2),
+    "area_series_pearson_r": _r(area_pearson_r),
+    "area_series_shared_months": int(len(area_join)),
+    "area_peak_km2": _r(_pk, 1),
+    "area_trough_km2": _r(_tr, 1),
+    "pct_area_decline": (_r(100 * (1 - _tr / _pk), 1)
+                         if (_pk and _tr is not None) else None),
+}
+
+with open("results.json") as f:
+    _res = json.load(f)
+_res["paper_tokens"] = paper_tokens
+with open("results.json", "w") as f:
+    json.dump(_res, f, indent=2)
+
+print(json.dumps(paper_tokens, indent=2))
+""")
 
 # ---------------------------------------------------------------------------
 # Write the notebook
